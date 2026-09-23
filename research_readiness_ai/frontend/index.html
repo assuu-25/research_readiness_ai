@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ResearchReadiness AI</title>
+<style>
+  :root {
+    --bg: #0a0e1a; --panel: #0f1729; --border: #1e2a45; --blue: #2563eb;
+    --blue-light: #60a5fa; --text: #e5e9f0; --muted: #8b96ab; --good: #22c55e;
+    --warn: #f59e0b; --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 40px 20px; min-height: 100vh;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-weight: 500; font-size: 2rem; margin-bottom: 4px; }
+  p.sub { color: var(--muted); margin-top: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+  label { display: block; margin: 12px 0 6px; color: var(--muted); font-size: 0.9rem; }
+  input[type=file] { color: var(--text); }
+  button {
+    background: var(--blue); color: white; border: none; padding: 12px 24px;
+    border-radius: 8px; font-size: 1rem; cursor: pointer; margin-top: 16px;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .score-hero { text-align: center; padding: 20px 0; }
+  .score-num { font-size: 4rem; font-weight: 600; color: var(--blue-light); }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .dim-card { border-left: 3px solid var(--blue); padding: 12px 16px; background: #101a30; border-radius: 6px; }
+  .dim-card .num { font-size: 1.6rem; font-weight: 600; }
+  .dim-card .label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .rec { padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 0; }
+  .rec .meta { color: var(--muted); font-size: 0.8rem; margin-bottom: 4px; }
+  .shap-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+  .shap-legacy { white-space: pre-line; line-height: 1.7; }
+  .pos { color: var(--good); } .neg { color: var(--bad); }
+  #status { color: var(--muted); margin-top: 10px; }
+  h2 { font-size: 1.1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ResearchReadiness AI</h1>
+  <p class="sub">Upload your draft paper (and optional dataset) for an instant readiness assessment.</p>
+
+  <div class="panel">
+    <label>Draft paper (.pdf, .docx, .txt)</label>
+    <input type="file" id="paperFile" accept=".pdf,.docx,.txt,.md">
+    <label>Dataset (.csv) — optional</label>
+    <input type="file" id="datasetFile" accept=".csv">
+    <br>
+    <button id="submitBtn" onclick="runAssessment()">Assess Readiness</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="results" style="display:none;">
+    <div class="panel score-hero">
+      <div class="label" style="color:var(--muted)">Research Readiness Score</div>
+      <div class="score-num" id="rrsNum">--</div>
+    </div>
+
+    <div class="panel">
+      <h2>Dimension Breakdown</h2>
+      <div class="grid4" id="dimGrid"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Top Recommendations</h2>
+      <div id="recList"></div>
+    </div>
+
+    <div class="panel">
+      <h2>What Drove This Score (SHAP)</h2>
+      <div id="shapList"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = "http://localhost:8000";
+
+async function runAssessment() {
+  const paperInput = document.getElementById('paperFile');
+  const datasetInput = document.getElementById('datasetFile');
+  const status = document.getElementById('status');
+  const btn = document.getElementById('submitBtn');
+
+  if (!paperInput.files.length) {
+    status.textContent = "Please choose a paper file first.";
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('paper', paperInput.files[0]);
+  if (datasetInput.files.length) formData.append('dataset', datasetInput.files[0]);
+
+  btn.disabled = true;
+  status.textContent = "Analyzing... (dataset quality, paper structure, literature, methodology)";
+
+  try {
+    const res = await fetch(`${API_BASE}/assess`, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Request failed');
+    }
+    const data = await res.json();
+    renderResults(data);
+    status.textContent = "Done.";
+  } catch (e) {
+    status.textContent = e instanceof TypeError
+      ? "Cannot reach the API. Start it with: uvicorn app.main:app --reload"
+      : "Error: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderResults(data) {
+  document.getElementById('results').style.display = 'block';
+  document.getElementById('rrsNum').textContent = data.research_readiness_score + '%';
+
+  const dimGrid = document.getElementById('dimGrid');
+  dimGrid.innerHTML = '';
+  const labels = {
+    dataset_quality: 'Dataset Quality',
+    paper_structure: 'Paper Structure',
+    literature_intelligence: 'Literature Review',
+    methodology_evaluation: 'Methodology'
+  };
+  for (const [key, report] of Object.entries(data.dimension_breakdown)) {
+    dimGrid.innerHTML += `
+      <div class="dim-card">
+        <div class="num">${report.aggregate_score}</div>
+        <div class="label">${labels[key] || key}</div>
+      </div>`;
+  }
+
+  const recList = document.getElementById('recList');
+  recList.innerHTML = data.recommendations.length ? '' : '<p style="color:var(--good)">No major issues detected.</p>';
+  data.recommendations.forEach(r => {
+    recList.innerHTML += `
+      <div class="rec">
+        <div class="meta">${r.feature} — score ${r.score}/100</div>
+        <div>${r.recommendation}</div>
+      </div>`;
+  });
+
+  const shapList = document.getElementById('shapList');
+  shapList.innerHTML = '';
+  shapList.className = '';
+  const explainability = data.explainability || {};
+  const positive = Array.isArray(explainability.top_positive_contributors)
+    ? explainability.top_positive_contributors : [];
+  const negative = Array.isArray(explainability.top_negative_contributors)
+    ? explainability.top_negative_contributors : [];
+  if (typeof explainability === 'string') {
+    shapList.className = 'shap-legacy';
+    shapList.textContent = explainability;
+    return;
+  }
+  if (explainability.base_value !== undefined) {
+    shapList.innerHTML = `<div class="shap-row"><span>Base value</span><span>${explainability.base_value}</span></div>`;
+  }
+  const combined = [
+    ...positive.map(c => ({...c, dir: 'pos'})),
+    ...negative.map(c => ({...c, dir: 'neg'}))
+  ].sort((a, b) => Math.abs(b.shap_impact) - Math.abs(a.shap_impact));
+  combined.forEach(c => {
+    shapList.innerHTML += `
+      <div class="shap-row">
+        <span>${c.feature} (value: ${c.value})</span>
+        <span class="${c.dir}">${c.shap_impact > 0 ? '+' : ''}${c.shap_impact}</span>
+      </div>`;
+  });
+}
+</script>
+</body>
+</html>
